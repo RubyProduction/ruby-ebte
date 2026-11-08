@@ -1,0 +1,39 @@
+name: Ruby EBTE Trading Cycle
+
+on:
+  schedule:
+    - cron: "*/15 * * * *"
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+
+concurrency:
+  group: ruby-ebte-cycle
+  cancel-in-progress: false
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22.13.0"
+
+      - name: Run one trading cycle
+        env:
+          BINANCE_DEMO_KEY: ${{ secrets.BINANCE_DEMO_KEY }}
+          BINANCE_DEMO_SECRET: ${{ secrets.BINANCE_DEMO_SECRET }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          COINALYZE_API_KEY: ${{ secrets.COINALYZE_API_KEY }}
+        run: node run.mjs
+
+      - name: Save state + dashboard back to the repo
+        run: |
+          git config user.name "ruby-ebte-bot"
+          git config user.email "actions@users.noreply.github.com"
+          git add data/state.json docs/
+          git diff --cached --quiet || git commit -m "Automated trading cycle $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          git push
