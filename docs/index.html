@@ -1,0 +1,78 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover"/>
+<title>Ruby EBTE — Dashboard</title>
+<style>
+:root{--bg:#0b0f14;--card:#12181f;--text:#e8edf2;--muted:#8b98a5;--good:#28c76f;--bad:#ea5455;--accent:#2f8cff;color-scheme:dark;}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--text);font-family:ui-monospace,Menlo,Consolas,monospace;padding:16px;}
+h1{font-size:18px;margin:0 0 4px}
+.sub{color:var(--muted);font-size:12px;margin-bottom:16px}
+.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:12px;margin-bottom:16px}
+.card{background:var(--card);border-radius:10px;padding:14px;overflow-x:auto}
+.card h2{font-size:13px;color:var(--muted);margin:0 0 8px;text-transform:uppercase;letter-spacing:.04em}
+table{width:100%;border-collapse:collapse;font-size:13px}
+td,th{padding:4px 6px;text-align:left;border-bottom:1px solid #1e2630;white-space:nowrap}
+.pos{color:var(--good)} .neg{color:var(--bad)}
+.pill{display:inline-block;padding:2px 8px;border-radius:999px;font-size:11px;background:#1e2630;margin-right:4px}
+.pill.on{background:#143a24;color:var(--good)}
+</style></head>
+<body>
+<h1>Ruby EBTE</h1>
+<div class="sub" id="meta">loading…</div>
+<div class="grid">
+  <div class="card"><h2>Active Sessions</h2><div id="sessions"></div></div>
+  <div class="card"><h2>Account</h2><div id="account"></div></div>
+  <div class="card"><h2>Open Positions</h2><div id="positions"></div></div>
+</div>
+<div class="grid">
+  <div class="card"><h2>Recent Decisions</h2><div id="decisions"></div></div>
+  <div class="card"><h2>Recent Trades</h2><div id="trades"></div></div>
+</div>
+<script>
+async function load(){
+  try{
+    const r = await fetch('data.json?_=' + Date.now());
+    const d = await r.json();
+    document.getElementById('meta').textContent = 'Last run: ' + d.generatedAt + (d.lastError ? ' · last error: ' + d.lastError : '');
+    document.getElementById('sessions').innerHTML = (d.activeSessions||[]).map(s=>'<span class="pill on">'+s+'</span>').join('') || '<span class="pill">none open</span>';
+    const a = d.account||{};
+    document.getElementById('account').innerHTML = '<table><tr><td>Balance</td><td>'+(a.balance??'—')+'</td></tr><tr><td>Unrealized PnL</td><td>'+(a.unrealizedPnl??'—')+'</td></tr></table>';
+    const pos = Object.entries(d.openPositions||{});
+    document.getElementById('positions').innerHTML = pos.length ? '<table><tr><th>Symbol</th><th>Side</th><th>Entry</th><th>Stop</th><th>Target</th></tr>' + pos.map(([sym,p])=>'<tr><td>'+sym+'</td><td>'+p.side+'</td><td>'+p.entryPrice+'</td><td>'+p.stopPrice+'</td><td>'+p.targetPrice+'</td></tr>').join('') + '</table>' : '<span style="color:var(--muted)">none</span>';
+    document.getElementById('decisions').innerHTML = (d.recentDecisions||[]).map(x=>'<div style="margin-bottom:6px;font-size:12px"><b>'+x.time+'</b> '+x.symbol+' — '+x.action+' <span style="color:var(--muted)">'+ (x.reason||'') +'</span></div>').join('') || '<span style="color:var(--muted)">none yet</span>';
+    document.getElementById('trades').innerHTML = (d.recentTrades||[]).map(x=>'<div style="margin-bottom:6px;font-size:12px"><b>'+x.time+'</b> '+x.symbol+' '+x.side+' qty '+x.qty+'</div>').join('') || '<span style="color:var(--muted)">none yet</span>';
+  }catch(e){ document.getElementById('meta').textContent = 'Failed to load data.json: ' + e; }
+}
+load(); setInterval(load, 30000);
+</script>
+</body></html>`;
+
+// ---------- main cycle ----------
+async function main() {
+  const state = loadState();
+  const decisions = [];
+  let account = null;
+
+  try {
+    const timeOffsetMs = await syncTimeOffset();
+    state.timeOffsetMs = timeOffsetMs;
+
+    if (HMAC_API_KEY && HMAC_API_SECRET) {
+      const acc = await signedRequest("GET", "/fapi/v3/account", {}, timeOffsetMs);
+      account = { balance: +acc.totalWalletBalance || 0, unrealizedPnl: +acc.totalUnrealizedProfit || 0, availableBalance: +acc.availableBalance || 0 };
+    }
+
+    const sessions = activeTradingSessions();
+    const coinalyze = await coinalyzeSnapshot(MAJORS_FOR_SESSION_BIAS);
+    const movers = await topMovers().catch(() => []);
+
+    const openCount = Object.keys(state.openPositions || {}).length;
+    const canOpenMore = sessions.length > 0 && openCount < MAX_OPEN_POSITIONS && account && account.availableBalance > 0;
+
+    if (!canOpenMore) {
+      decisions.push({ time: isoNow(), symbol: "-", action: "SKIP_SCAN", reason: sessions.length === 0 ? "no trading session open" : openCount >= MAX_OPEN_POSITIONS ? "max open positions reached" : "no account/balance data" });
+    } else {
+      // Only look at movers we can also get a funding read on, so the decision is backed by
+      // the checklist's funding-crowding signal, not momentum alone.
+      const coinalyzeSymbolFor = (sym) => `${sym}_PERP.A
