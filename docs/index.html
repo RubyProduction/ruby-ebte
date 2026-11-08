@@ -46,33 +46,4 @@ async function load(){
 }
 load(); setInterval(load, 30000);
 </script>
-</body></html>`;
-
-// ---------- main cycle ----------
-async function main() {
-  const state = loadState();
-  const decisions = [];
-  let account = null;
-
-  try {
-    const timeOffsetMs = await syncTimeOffset();
-    state.timeOffsetMs = timeOffsetMs;
-
-    if (HMAC_API_KEY && HMAC_API_SECRET) {
-      const acc = await signedRequest("GET", "/fapi/v3/account", {}, timeOffsetMs);
-      account = { balance: +acc.totalWalletBalance || 0, unrealizedPnl: +acc.totalUnrealizedProfit || 0, availableBalance: +acc.availableBalance || 0 };
-    }
-
-    const sessions = activeTradingSessions();
-    const coinalyze = await coinalyzeSnapshot(MAJORS_FOR_SESSION_BIAS);
-    const movers = await topMovers().catch(() => []);
-
-    const openCount = Object.keys(state.openPositions || {}).length;
-    const canOpenMore = sessions.length > 0 && openCount < MAX_OPEN_POSITIONS && account && account.availableBalance > 0;
-
-    if (!canOpenMore) {
-      decisions.push({ time: isoNow(), symbol: "-", action: "SKIP_SCAN", reason: sessions.length === 0 ? "no trading session open" : openCount >= MAX_OPEN_POSITIONS ? "max open positions reached" : "no account/balance data" });
-    } else {
-      // Only look at movers we can also get a funding read on, so the decision is backed by
-      // the checklist's funding-crowding signal, not momentum alone.
-      const coinalyzeSymbolFor = (sym) => `${sym}_PERP.A
+</body></html>
